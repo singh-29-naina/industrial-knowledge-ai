@@ -1,6 +1,6 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException
 from app.graph_engine import ai_graph
-from app.vector_engine import store_document_vectors # <-- Import the vector engine
+from app.vector_engine import store_document_vectors, delete_document_vectors  
 import io
 import pypdf
 import pandas as pd
@@ -65,3 +65,14 @@ async def ingest_heterogeneous_document(file: UploadFile = File(...)):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"AI Ingestion Core Failure: {str(e)}")
+    
+
+@router.delete("/documents/{document_name}")
+async def delete_document_vectors_endpoint(document_name: str):
+    try:
+        deleted_count = delete_document_vectors(document_name)
+        if deleted_count == 0:
+            return {"status": "not_found", "documentName": document_name, "deletedChunks": 0}
+        return {"status": "success", "documentName": document_name, "deletedChunks": deleted_count}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Vector purge failed: {str(e)}")

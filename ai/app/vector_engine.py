@@ -46,3 +46,13 @@ def store_document_vectors(document_name: str, raw_text: str):
     )
     
     return len(text_chunks)
+
+def delete_document_vectors(document_name: str) -> int:
+    """Removes all chunks belonging to a given source document from ChromaDB.
+    Returns the number of chunks deleted."""
+    existing = collection.get(where={"source": document_name}, include=[])
+    ids_to_delete = existing.get("ids", [])
+    if not ids_to_delete:
+        return 0
+    collection.delete(ids=ids_to_delete)
+    return len(ids_to_delete)

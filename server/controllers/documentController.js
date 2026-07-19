@@ -2,11 +2,23 @@ import axios from 'axios';
 import FormData from 'form-data';
 import { Document } from '../models/documentModel.js';
 import ActivityLog from '../models/ActivityLog.js';
+import { Settings } from '../models/settingsModel.js';
+
 
 export const uploadDocument = async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ message: 'No industrial file uploaded.' });
+    }
+
+    const settings = await Settings.findOne();
+    const maxUploadMB = settings?.storage?.maxUploadMB || 50;
+    const maxUploadBytes = maxUploadMB * 1024 * 1024;
+
+    if (req.file.size > maxUploadBytes) {
+      return res.status(413).json({
+        message: `File exceeds the configured upload limit of ${maxUploadMB}MB.`
+      });
     }
 
     const { category, department, description, title } = req.body;
@@ -91,9 +103,16 @@ export const deleteDocument = async (req, res) => {
     const doc = await Document.findById(id);
     if (!doc) return res.status(404).json({ message: 'Document not found.' });
 
+    let vectorsPurged = false;
+    let vectorPurgeWarning = null;
     try {
-      await axios.delete(`http://localhost:8000/api/ai/documents/${doc.fileName}`);
+      const aiServiceUrl = process.env.AI_SERVICE_URL || 'http://127.0.0.1:8000';
+      const aiResponse = await axios.delete(
+        `${aiServiceUrl}/api/ai/documents/${encodeURIComponent(doc.fileName)}`
+      );
+      vectorsPurged = aiResponse.data?.status === 'success';
     } catch (aiError) {
+      vectorPurgeWarning = 'Vector embeddings could not be purged from the AI core — the AI service may be offline.';
       console.error('Warning: Could not clear embeddings from AI core:', aiError.message);
     }
 
@@ -110,7 +129,12 @@ export const deleteDocument = async (req, res) => {
       console.error('Activity log write failed:', logErr.message);
     }
 
-    res.status(200).json({ message: 'Document removed from system inventory and AI memory.' });
+    res.status(200).json({
+      message: vectorPurgeWarning
+        ? `Document removed from system inventory. ${vectorPurgeWarning}`
+        : 'Document removed from system inventory and AI memory.',
+      vectorsPurged
+    });
   } catch (error) {
     res.status(500).json({ message: 'Deletion workflow failed', error: error.message });
   }

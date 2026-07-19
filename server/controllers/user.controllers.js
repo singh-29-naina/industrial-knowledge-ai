@@ -7,8 +7,8 @@ import { PendingUser } from '../models/PendingUser.js';
 import { generateAccessToken, generateRefreshToken } from '../utils/generateToken.js';
 import { approvalHtml, rejectionHtml } from '../templates/emailTemplates.js';
 import ActivityLog from '../models/ActivityLog.js';
-
-
+import { Settings } from '../models/settingsModel.js';
+import ms from 'ms';
 
 
 /**
@@ -54,8 +54,7 @@ export const registerUser = async (req, res) => {
     });
 
   } catch (error) {
-    console.error("SERVER CRASH ERROR:", error); // 👈 Add this line here
-    res.status(500).json({ message: 'Registration failed', error: error.message })
+    console.error("SERVER CRASH ERROR:", error);
     res.status(500).json({ message: 'Registration failed', error: error.message });
   }
 };
@@ -70,7 +69,7 @@ export const loginUser = async (req, res) => {
     const { email, password } = req.body;
 
     const user = await User.findOne({ email: email.toLowerCase() });
-    
+
     // If not found in User, check if they are still stuck in Pending User queue
     if (!user) {
       const isPending = await PendingUser.findOne({ email: email.toLowerCase() });
@@ -90,14 +89,19 @@ export const loginUser = async (req, res) => {
     user.lastLogin = new Date();
     await user.save();
 
-    const accessToken = generateAccessToken(user);
+    // Live, admin-configurable session length from Settings — falls back to
+    // ACCESS_TOKEN_EXPIRE in .env if no Settings doc exists yet.
+    const settings = await Settings.findOne();
+    const accessToken = generateAccessToken(user, settings?.security?.sessionTimeoutMinutes);
     const refreshToken = generateRefreshToken(user);
 
     res.cookie('refreshToken', refreshToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'strict',
-      maxAge: 7 * 24 * 60 * 60 * 1000
+      // maxAge now derived from the same env var the JWT itself is signed
+      // with, so the cookie can never outlive the token inside it.
+      maxAge: ms(process.env.REFRESH_TOKEN_EXPIRE || '7d')
     });
 
     res.status(200).json({
@@ -130,18 +134,10 @@ export const getPendingUsers = async (req, res) => {
 };
 
 /**
- * @desc    Approve a registration request and set their role explicitly
- * @route   POST /api/users/approve/:id
- * @access  Private (Admin Only)
- */
-
-
-/**
  * @desc    Fetch new Access Token using valid HTTP-Only Refresh Token
  * @route   POST /api/users/refresh
  * @access  Public (Relies on Cookie validation)
  */
-// 💡 UPDATE THIS FUNCTION IN YOUR BACKEND user.controller.js
 export const refreshAccessToken = async (req, res) => {
   try {
     const refreshToken = req.cookies?.refreshToken;
@@ -158,18 +154,25 @@ export const refreshAccessToken = async (req, res) => {
           return res.status(403).json({ message: 'Forbidden: Invalid or Expired Refresh Token' });
         }
 
-        const user = await User.findById(decoded.userId);
-        if (!user || !user.isActive) {
-          return res.status(403).json({ message: 'User account no longer exists or is disabled' });
+        // Wrapped in its own try/catch — this callback is detached from
+        // the outer try/catch, so a DB error here previously hung the
+        // request with no response ever sent.
+        try {
+          const user = await User.findById(decoded.userId);
+          if (!user || !user.isActive) {
+            return res.status(403).json({ message: 'User account no longer exists or is disabled' });
+          }
+
+          const settings = await Settings.findOne();
+          const newAccessToken = generateAccessToken(user, settings?.security?.sessionTimeoutMinutes);
+
+          res.status(200).json({
+            accessToken: newAccessToken,
+            role: user.role
+          });
+        } catch (innerError) {
+          res.status(500).json({ message: 'Token refresh failed', error: innerError.message });
         }
-
-        const newAccessToken = generateAccessToken(user);
-
-        // 💡 CORRECTED: Return both the new token AND the role!
-        res.status(200).json({ 
-          accessToken: newAccessToken,
-          role: user.role 
-        });
       }
     );
   } catch (error) {
@@ -198,7 +201,6 @@ export const logoutUser = (req, res) => {
  */
 export const getUserProfile = async (req, res) => {
   try {
-    // req.user is set by your authenticateJWT middleware (which parses decoded payload fields)
     const user = await User.findById(req.user.userId).select('-password');
     if (!user) {
       return res.status(404).json({ message: 'User profile not found.' });
@@ -236,7 +238,7 @@ export const forgotPassword = async (req, res) => {
 
     // 3. Set token expiry time (e.g., 10 minutes from current time)
     user.resetPasswordToken = hashedToken;
-    user.resetPasswordExpire = Date.now() + 10 * 60 * 1000; 
+    user.resetPasswordExpire = Date.now() + 10 * 60 * 1000;
 
     await user.save();
 
@@ -265,7 +267,7 @@ export const forgotPassword = async (req, res) => {
       user.resetPasswordToken = null;
       user.resetPasswordExpire = null;
       await user.save();
-      
+
       return res.status(500).json({ message: 'Email could not be dispatched.', error: emailError.message });
     }
 
@@ -318,8 +320,6 @@ export const resetPassword = async (req, res) => {
   }
 };
 
-
-
 export const approveUser = async (req, res) => {
   try {
     const { id } = req.params;
@@ -342,7 +342,7 @@ export const approveUser = async (req, res) => {
       email: pendingRequest.email,
       department: pendingRequest.department,
       password: pendingRequest.password, // Pre-hashed
-      role: role, 
+      role: role,
       isActive: true
     });
 
@@ -357,11 +357,9 @@ export const approveUser = async (req, res) => {
         htmlMessage: approvalHtml(verifiedUser.name, role),
       });
     } catch (emailError) {
-      // Log the error but don't fail the HTTP request if the email transport has a hiccup
       console.error(`Warning: Approval email failed to send to ${verifiedUser.email}:`, emailError);
     }
 
-    // 5. Send success response back to the admin
     res.status(200).json({
       message: `User approved successfully and assigned the role of ${role}.`,
       userId: verifiedUser._id
@@ -371,7 +369,6 @@ export const approveUser = async (req, res) => {
     res.status(500).json({ message: 'Approval execution failed', error: error.message });
   }
 };
-
 
 export const rejectUser = async (req, res) => {
   try {
@@ -409,6 +406,7 @@ export const rejectUser = async (req, res) => {
     res.status(500).json({ message: "Server error during rejection process.", error: error.message });
   }
 };
+
 /**
  * @desc    Fetch all active/approved users (Admin directory)
  * @route   GET /api/users
@@ -497,8 +495,6 @@ export const deleteUser = async (req, res) => {
   }
 };
 
-
-
 export const adminCreateUser = async (req, res) => {
   try {
     const { name, employeeId, email, department, role } = req.body;
@@ -566,10 +562,3 @@ export const getUserActivity = async (req, res) => {
     res.status(500).json({ message: 'Failed to fetch user activity', error: error.message });
   }
 };
-
-
-
-
-
-
-

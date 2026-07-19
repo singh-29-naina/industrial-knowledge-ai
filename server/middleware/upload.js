@@ -25,6 +25,8 @@ const fileFilter = (req, file, cb) => {
 
 export const upload = multer({
   storage: storage,
-  limits: { fileSize: 50 * 1024 * 1024 }, // Upped limit to 50MB for heavy engineering blueprints
+  // Hard ceiling only — the real, admin-configurable limit is enforced in
+  // documentController.uploadDocument by reading Settings.storage.maxUploadMB live.
+  limits: { fileSize: 200 * 1024 * 1024 },
   fileFilter: fileFilter
 });

@@ -50,12 +50,13 @@ const Settings = () => {
     setSettings((prev) => ({ ...prev, [section]: { ...prev[section], [key]: value } }));
   };
 
-  const handleSave = async () => {
+  const handleSave = async (overrideSettings) => {
     if (!isAdmin) return;
+    const payload = overrideSettings || settings;
     setSaving(true);
     setError("");
     try {
-      const res = await api.put("/api/settings", settings);
+      const res = await api.put("/api/settings", payload);
       setSettings(res.data);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
@@ -65,6 +66,17 @@ const Settings = () => {
     } finally {
       setSaving(false);
     }
+  };
+
+  // Some fields (like session timeout) should persist to the backend the
+  // moment they're changed, instead of waiting for the global Save button.
+  // We build the updated object explicitly (rather than relying on the
+  // async setSettings) so the PUT request always carries the fresh value.
+  const updateFieldAndSave = async (section, key, value) => {
+    if (!isAdmin) return;
+    const updated = { ...settings, [section]: { ...settings[section], [key]: value } };
+    setSettings(updated);
+    await handleSave(updated);
   };
 
   const handleLogout = async () => {
@@ -108,7 +120,7 @@ const Settings = () => {
             </div>
             {isAdmin && (
               <button
-                onClick={handleSave}
+                onClick={() => handleSave()}
                 disabled={saving}
                 className="bg-white hover:bg-[#DFCFEE] text-[#363062] px-6 py-3 rounded-2xl flex items-center justify-center gap-2 transition-all duration-200 shadow-md font-bold text-sm shrink-0 disabled:opacity-70"
               >
@@ -243,16 +255,18 @@ const Settings = () => {
                 <div>
                   <label className="text-[10px] font-bold text-[#363062] uppercase tracking-wide">Automatic Session Timeout</label>
                   <select
-                    disabled={!isAdmin}
+                    disabled={!isAdmin || saving}
                     value={settings.security.sessionTimeoutMinutes}
-                    onChange={(e) => updateField("security", "sessionTimeoutMinutes", Number(e.target.value))}
+                    onChange={(e) => updateFieldAndSave("security", "sessionTimeoutMinutes", Number(e.target.value))}
                     className="w-full mt-2 border border-[#363062]/10 bg-slate-50 rounded-xl px-3 py-2.5 outline-none text-xs font-semibold text-[#363062] disabled:opacity-60"
                   >
                     <option value={15}>15 Minutes</option>
                     <option value={30}>30 Minutes</option>
                     <option value={60}>1 Hour</option>
                   </select>
-                  <p className="text-[9px] text-slate-400 mt-1">Note: changing this doesn't yet update the backend token expiry — that's still fixed via `ACCESS_TOKEN_EXPIRE` in .env.</p>
+                  <p className="text-[9px] text-slate-400 mt-1">
+                    {saving ? "Saving to backend…" : "Applies immediately on selection. New timeout takes effect on next login."}
+                  </p>
                 </div>
                 <div>
                   <label className="text-[10px] font-bold text-[#363062] uppercase tracking-wide">Min Password Length</label>
